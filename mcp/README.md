@@ -10,40 +10,103 @@ re-learning the surface. `browser_snapshot` returns an accessibility-style
 outline where interactive elements carry `[ref=eN]` handles; pass a ref (or a
 raw CSS selector) to the action tools.
 
-## Install
+## Quick start (no clone needed)
 
-```bash
-cd mcp
-python -m venv .venv && .venv/bin/pip install -e .
-```
-
-Then either install the bundled Chromium:
-
-```bash
-.venv/bin/python -m rustwright install chromium
-```
-
-or point the server at an existing Chrome via `RUSTWRIGHT_MCP_CHANNEL=chrome`.
-
-## Register with Claude Code
+With [uv](https://docs.astral.sh/uv/) installed, register the server with
+Claude Code in one command — `uvx` fetches and runs it straight from GitHub:
 
 ```bash
 claude mcp add rustwright \
   --env RUSTWRIGHT_MCP_CHANNEL=chrome \
-  -- <source-checkout>/mcp/.venv/bin/rustwright-mcp
+  -- uvx --from 'git+https://github.com/sujithps/rustwright#subdirectory=mcp' rustwright-mcp
 ```
 
-Or add to any MCP client config:
+Note the `--` before the command: `--env` is variadic, so without the
+separator it swallows the command and `claude mcp add` fails with
+`missing required argument 'commandOrUrl'`.
+
+Or add to any MCP client config (Claude Desktop, Cursor, etc.):
 
 ```json
 {
   "mcpServers": {
     "rustwright": {
-      "command": "<source-checkout>/mcp/.venv/bin/rustwright-mcp",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/sujithps/rustwright#subdirectory=mcp",
+        "rustwright-mcp"
+      ],
       "env": { "RUSTWRIGHT_MCP_CHANNEL": "chrome" }
     }
   }
 }
+```
+
+`RUSTWRIGHT_MCP_CHANNEL=chrome` uses your installed Google Chrome. Drop it
+to use rustwright's bundled Chromium instead (install once with
+`uvx --from 'git+https://github.com/sujithps/rustwright#subdirectory=mcp' python -m rustwright install chromium`).
+
+Without uv, install into a plain venv from git:
+
+```bash
+python3 -m venv ~/.rustwright-mcp
+~/.rustwright-mcp/bin/pip install 'rustwright-mcp @ git+https://github.com/sujithps/rustwright#subdirectory=mcp'
+```
+
+## Install from a source checkout
+
+```bash
+cd mcp
+python3 -m venv .venv && .venv/bin/pip install -e .
+```
+
+Then either install the bundled Chromium
+(`.venv/bin/python -m rustwright install chromium`) or use
+`RUSTWRIGHT_MCP_CHANNEL=chrome`.
+
+## Register with Claude Code (installed binary)
+
+Use the **absolute path** to the `rustwright-mcp` binary — the server is
+spawned from arbitrary working directories, so relative paths break:
+
+```bash
+claude mcp add rustwright \
+  --env RUSTWRIGHT_MCP_CHANNEL=chrome \
+  -- "$HOME/.rustwright-mcp/bin/rustwright-mcp"
+```
+
+Example with a source checkout at `~/code/rustwright`:
+
+```bash
+claude mcp add rustwright \
+  --env RUSTWRIGHT_MCP_CHANNEL=chrome \
+  -- "$HOME/code/rustwright/mcp/.venv/bin/rustwright-mcp"
+```
+
+Verify with `claude mcp list` — the entry should show `✔ Connected`.
+
+## Example session
+
+What an agent sees. `browser_navigate` returns a snapshot; interactive
+elements carry `[ref=eN]` handles that later calls act on:
+
+```
+> browser_navigate(url="https://example.com")
+Page: Example Domain
+URL: https://example.com/
+
+- heading "Example Domain" [level=1]
+- text: This domain is for use in documentation examples...
+- link "Learn more" [href=https://iana.org/domains/example] [ref=e1]
+
+> browser_click(target="e1")
+Page: Example Domains
+URL: https://www.iana.org/help/example-domains
+...
+
+> browser_get_text(selector="h1")
+Example Domains
 ```
 
 ## Tools
