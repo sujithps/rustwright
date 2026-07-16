@@ -18,7 +18,7 @@ Claude Code in one command — `uvx` fetches and runs it straight from GitHub:
 ```bash
 claude mcp add rustwright \
   --env RUSTWRIGHT_MCP_CHANNEL=chrome \
-  -- uvx --from 'git+https://github.com/sujithps/rustwright#subdirectory=mcp' rustwright-mcp
+  -- uvx --from 'git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp' rustwright-mcp
 ```
 
 Note the `--` before the command: `--env` is variadic, so without the
@@ -34,7 +34,7 @@ Or add to any MCP client config (Claude Desktop, Cursor, etc.):
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/sujithps/rustwright#subdirectory=mcp",
+        "git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp",
         "rustwright-mcp"
       ],
       "env": { "RUSTWRIGHT_MCP_CHANNEL": "chrome" }
@@ -45,13 +45,13 @@ Or add to any MCP client config (Claude Desktop, Cursor, etc.):
 
 `RUSTWRIGHT_MCP_CHANNEL=chrome` uses your installed Google Chrome. Drop it
 to use rustwright's bundled Chromium instead (install once with
-`uvx --from 'git+https://github.com/sujithps/rustwright#subdirectory=mcp' python -m rustwright install chromium`).
+`uvx --from 'git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp' python -m rustwright install chromium`).
 
 Without uv, install into a plain venv from git:
 
 ```bash
 python3 -m venv ~/.rustwright-mcp
-~/.rustwright-mcp/bin/pip install 'rustwright-mcp @ git+https://github.com/sujithps/rustwright#subdirectory=mcp'
+~/.rustwright-mcp/bin/pip install 'rustwright-mcp @ git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp'
 ```
 
 ## Install from a source checkout
@@ -134,6 +134,24 @@ Example Domains
 | `RUSTWRIGHT_MCP_HEADLESS` | `0` shows the browser window (default headless) |
 | `RUSTWRIGHT_MCP_CHANNEL` | Chromium channel, e.g. `chrome`, `chrome-beta` |
 | `RUSTWRIGHT_MCP_EXECUTABLE` | Explicit browser binary path (overrides channel) |
+
+### Headless vs headed
+
+The browser runs **headless** by default: no window, suited to CI and
+background agents. Set `RUSTWRIGHT_MCP_HEADLESS=0` to run **headed** with a
+visible browser window — useful for watching the agent work, debugging
+selectors, and for sites whose bot detection blocks headless sessions:
+
+```bash
+claude mcp add rustwright \
+  --env RUSTWRIGHT_MCP_CHANNEL=chrome \
+  --env RUSTWRIGHT_MCP_HEADLESS=0 \
+  -- uvx --from 'git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp' rustwright-mcp
+```
+
+The mode is fixed for the lifetime of the server process; to switch, change
+the env var and restart the MCP server (in Claude Code: re-add the server or
+restart the session).
 
 ## Limitations
 
