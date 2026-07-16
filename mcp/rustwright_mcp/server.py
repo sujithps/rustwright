@@ -8,6 +8,7 @@ Environment variables:
     RUSTWRIGHT_MCP_HEADLESS    "0" to show the browser window (default headless)
     RUSTWRIGHT_MCP_CHANNEL     chromium channel, e.g. "chrome" (default: bundled chromium)
     RUSTWRIGHT_MCP_EXECUTABLE  explicit browser executable path (overrides channel)
+    RUSTWRIGHT_MCP_ALLOW_EVAL  "1", "true", or "yes" to expose browser_evaluate
 """
 
 from __future__ import annotations
@@ -41,6 +42,30 @@ def _serialized(fn):
 SNAPSHOT_CHAR_LIMIT = 30_000
 
 
+def _handle_dialog(page, dialog) -> None:
+    policy = _session.get("dialog_policy")
+    if policy is None or policy["page"] is not page:
+        dialog.dismiss()
+        return
+
+    _session.pop("dialog_policy")
+    if policy["accept"]:
+        if policy["prompt_text"] is None:
+            dialog.accept()
+        else:
+            dialog.accept(policy["prompt_text"])
+    else:
+        dialog.dismiss()
+
+
+def _register_dialog_handler(page) -> None:
+    pages = _session.setdefault("dialog_pages", [])
+    if any(existing is page for existing in pages):
+        return
+    page.on("dialog", functools.partial(_handle_dialog, page))
+    pages.append(page)
+
+
 def _page():
     if "page" in _session:
         try:
@@ -63,7 +88,15 @@ def _page():
         pw = sync_playwright().start()
         browser = pw.chromium.launch(**launch_kwargs)
         page = browser.new_page()
-        _session.update(pw=pw, browser=browser, page=page, snapshot_taken=False)
+        _session.update(
+            pw=pw,
+            browser=browser,
+            page=page,
+            snapshot_taken=False,
+            next_ref=1,
+            dialog_pages=[],
+        )
+        _register_dialog_handler(page)
     return _session["page"]
 
 
@@ -73,7 +106,9 @@ def _snapshot(page) -> str:
         page.wait_for_load_state(timeout=10_000)
     except Exception:
         pass
-    outline = page.evaluate(SNAPSHOT_JS)
+    result = page.evaluate(SNAPSHOT_JS, _session["next_ref"])
+    outline = result["outline"]
+    _session["next_ref"] = result["nextRef"]
     _session["snapshot_taken"] = True
     header = f"Page: {page.title()}\nURL: {page.url}\n\n"
     body = outline[:SNAPSHOT_CHAR_LIMIT]
@@ -204,6 +239,84 @@ def browser_navigate_back() -> str:
 
 @mcp.tool()
 @_serialized
+def browser_reload() -> str:
+    """Reload the active page. Returns a fresh snapshot."""
+    page = _page()
+    page.reload()
+    return _snapshot(page)
+
+
+@mcp.tool()
+@_serialized
+def browser_tabs(
+    action: str, index: int | None = None, url: str | None = None
+) -> str:
+    """List, open, select, or close browser tabs.
+
+    `action` is one of "list", "new", "select", or "close". `index` is
+    required when selecting or closing a tab; `url` is optional for new tabs.
+    """
+    page = _page()
+    context = page.context
+    pages = list(context.pages)
+    action = action.lower()
+
+    if action == "list":
+        return "\n".join(
+            f"{i}: {tab.title()} — {tab.url}" for i, tab in enumerate(pages)
+        )
+    if action == "new":
+        page = context.new_page()
+        _register_dialog_handler(page)
+        _session["page"] = page
+        if url:
+            page.goto(url)
+        return _snapshot(page)
+    if action not in {"select", "close"}:
+        raise ValueError('action must be one of "list", "new", "select", or "close"')
+    if index is None or index < 0 or index >= len(pages):
+        raise ValueError(f"Invalid tab index {index}; expected 0 through {len(pages) - 1}")
+
+    if action == "select":
+        page = pages[index]
+        _register_dialog_handler(page)
+        _session["page"] = page
+        page.bring_to_front()
+        return _snapshot(page)
+
+    closing = pages[index]
+    was_active = closing is page
+    closing.close()
+    remaining = list(context.pages)
+    if not remaining:
+        page = context.new_page()
+    elif was_active:
+        page = remaining[min(index, len(remaining) - 1)]
+    _register_dialog_handler(page)
+    _session["page"] = page
+    return _snapshot(page)
+
+
+@mcp.tool()
+@_serialized
+def browser_handle_dialog(accept: bool, prompt_text: str | None = None) -> str:
+    """Accept or dismiss the next JavaScript dialog on the active page.
+
+    A dialog opened by a brand-new popup may be auto-dismissed before its page
+    can be registered. The policy is consumed once; other dialogs auto-dismiss.
+    """
+    page = _page()
+    _session["dialog_policy"] = {
+        "page": page,
+        "accept": accept,
+        "prompt_text": prompt_text,
+    }
+    action = "accepted" if accept else "dismissed"
+    return f"The next dialog on the active page will be {action}."
+
+
+@mcp.tool()
+@_serialized
 def browser_wait_for(text: Optional[str] = None, timeout_ms: float = 10_000) -> str:
     """Wait for text to appear on the page (or for load state when no text
     is given), then return a snapshot."""
@@ -222,12 +335,22 @@ def browser_get_text(selector: str = "body", max_chars: int = 20_000) -> str:
     return _page().inner_text(selector)[:max_chars]
 
 
-@mcp.tool()
-@_serialized
 def browser_evaluate(expression: str) -> str:
     """Run JavaScript in the page. Use an arrow function, e.g.
     "() => document.title". Returns the JSON-ish result as a string."""
     return str(_page().evaluate(expression))
+
+
+def _allow_eval() -> bool:
+    return os.environ.get("RUSTWRIGHT_MCP_ALLOW_EVAL", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+if _allow_eval():
+    mcp.tool()(_serialized(browser_evaluate))
 
 
 @mcp.tool()

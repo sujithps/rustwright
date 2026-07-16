@@ -2,15 +2,16 @@
 
 Produces a compact accessibility-style outline of the page and tags every
 emitted element with a ``data-mcp-ref`` attribute so tools can act on it
-later via an attribute selector. Refs are regenerated on every snapshot;
-acting on a ref from an older snapshot raises a clear error in the server.
+later via an attribute selector. Refs increase for the lifetime of a browser
+session and are regenerated on every snapshot; acting on a ref from an older
+snapshot raises a clear error in the server.
 """
 
 SNAPSHOT_JS = r"""
-() => {
+(startRef) => {
   const MAX_NAME = 120;
   const MAX_LINES = 1200;
-  let refCounter = 0;
+  let refCounter = startRef;
   const lines = [];
 
   for (const el of document.querySelectorAll('[data-mcp-ref]')) {
@@ -100,11 +101,15 @@ SNAPSHOT_JS = r"""
       if (el.disabled) parts.push('[disabled]');
       if (el.checked) parts.push('[checked]');
       if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value) {
-        parts.push(`[value="${String(el.value).slice(0, 60)}"]`);
+        const isPassword = el.tagName === 'INPUT'
+          && (el.getAttribute('type') || 'text').toLowerCase() === 'password';
+        parts.push(isPassword
+          ? '[value=••••••]'
+          : `[value="${String(el.value).slice(0, 60)}"]`);
       }
       if (isInteractive(el, role)) {
-        refCounter += 1;
         const ref = `e${refCounter}`;
+        refCounter += 1;
         el.setAttribute('data-mcp-ref', ref);
         parts.push(`[ref=${ref}]`);
       }
@@ -128,9 +133,11 @@ SNAPSHOT_JS = r"""
     for (const child of el.children) walk(child, emittedDepth);
   };
 
-  if (!document.body) return '- (page has no body yet)';
+  if (!document.body) {
+    return {outline: '- (page has no body yet)', nextRef: refCounter};
+  }
   walk(document.body, 0);
   if (lines.length >= MAX_LINES) lines.push('- … (snapshot truncated)');
-  return lines.join('\n');
+  return {outline: lines.join('\n'), nextRef: refCounter};
 }
 """

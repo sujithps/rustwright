@@ -24,13 +24,17 @@ def _server_command() -> list[str]:
     return [sys.executable, "-m", "rustwright_mcp"]
 
 
-async def _run_session(checks) -> None:
+async def _run_session(checks, env_overrides=None) -> None:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
     command = _server_command()
+    env = dict(os.environ)
+    env.pop("RUSTWRIGHT_MCP_ALLOW_EVAL", None)
+    if env_overrides:
+        env.update(env_overrides)
     params = StdioServerParameters(
-        command=command[0], args=command[1:], env=dict(os.environ)
+        command=command[0], args=command[1:], env=env
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -57,19 +61,38 @@ def test_stdio_form_flow():
         snap = await _call(session, "browser_navigate", url=FIXTURE.as_uri())
         assert snap.startswith("Page: Form Test")
         name_ref = re.search(r'textbox "Customer name"[^\[]*\[ref=(e\d+)\]', snap).group(1)
-        size_ref = re.search(r'combobox "Size" \[ref=(e\d+)\]', snap).group(1)
-        btn_ref = re.search(r'button "Place order"[^\[]*\[ref=(e\d+)\]', snap).group(1)
 
-        await _call(session, "browser_type", target=name_ref, text="Rustwright Test")
-        await _call(session, "browser_select_option", target=size_ref, value="Large")
+        snap = await _call(
+            session, "browser_type", target=name_ref, text="Rustwright Test"
+        )
+        size_ref = re.search(r'combobox "Size" \[ref=(e\d+)\]', snap).group(1)
+        snap = await _call(
+            session, "browser_select_option", target=size_ref, value="Large"
+        )
+        btn_ref = re.search(
+            r'button "Place order"[^\[]*\[ref=(e\d+)\]', snap
+        ).group(1)
         await _call(session, "browser_click", target=btn_ref)
 
         out = await _call(session, "browser_get_text", selector="#out")
         assert out == "name=Rustwright Test;size=l"
 
+        assert await _call(session, "browser_close") == "Browser closed."
+
+    asyncio.run(_run_session(checks))
+
+
+def test_stdio_evaluate_opt_in():
+    async def checks(session):
+        tools = {t.name for t in (await session.list_tools()).tools}
+        assert "browser_evaluate" in tools
+
+        await _call(session, "browser_navigate", url=FIXTURE.as_uri())
         title = await _call(session, "browser_evaluate", expression="() => document.title")
         assert title == "Form Test"
 
         assert await _call(session, "browser_close") == "Browser closed."
 
-    asyncio.run(_run_session(checks))
+    asyncio.run(
+        _run_session(checks, {"RUSTWRIGHT_MCP_ALLOW_EVAL": "1"})
+    )

@@ -121,9 +121,12 @@ Example Domains
 | `browser_hover(target)` | Hover an element |
 | `browser_press_key(key)` | Press a keyboard key |
 | `browser_navigate_back()` | History back |
+| `browser_reload()` | Reload the active page, returns snapshot |
+| `browser_tabs(action, index?, url?)` | List, open, select, or close tabs |
+| `browser_handle_dialog(accept, prompt_text?)` | Set a one-shot policy for the next dialog |
 | `browser_wait_for(text?, timeout_ms?)` | Wait for text or load state |
 | `browser_get_text(selector?)` | Visible text of a selector |
-| `browser_evaluate(expression)` | Run JavaScript in the page |
+| `browser_evaluate(expression)` | Run JavaScript in the page (opt-in) |
 | `browser_take_screenshot(path?)` | Save a PNG, returns the path |
 | `browser_close()` | End the browser session |
 
@@ -134,6 +137,7 @@ Example Domains
 | `RUSTWRIGHT_MCP_HEADLESS` | `0` shows the browser window (default headless) |
 | `RUSTWRIGHT_MCP_CHANNEL` | Chromium channel, e.g. `chrome`, `chrome-beta` |
 | `RUSTWRIGHT_MCP_EXECUTABLE` | Explicit browser binary path (overrides channel) |
+| `RUSTWRIGHT_MCP_ALLOW_EVAL` | `1`, `true`, or `yes` exposes `browser_evaluate` (default off) |
 
 ### Headless vs headed
 
@@ -153,12 +157,24 @@ The mode is fixed for the lifetime of the server process; to switch, change
 the env var and restart the MCP server (in Claude Code: re-add the server or
 restart the session).
 
+## Security & scope
+
+- `browser_evaluate` is off by default because it runs arbitrary JavaScript
+  in the page. Set `RUSTWRIGHT_MCP_ALLOW_EVAL=1` and restart the server to
+  expose it.
+- Snapshots reflect page state, including field values. Password input values
+  are masked in snapshot output; other field values are included as-is.
+- Snapshot refs are best-effort handles for cooperative pages, not a security
+  boundary. Refs increase for the browser session and stale refs fail fast.
+- Each server process controls a single local browser session, which may have
+  multiple tabs.
+
 ## Limitations
 
-- Single page, single browser session per server process.
+- Single local browser session per server process.
 - Snapshot refs are regenerated on every snapshot; after a page mutation,
   take a new snapshot before acting on refs. Stale refs fail fast with a
   message asking for a fresh snapshot.
 - The snapshot script does not walk iframes (any origin) or shadow DOM;
-  iframes appear as `- iframe "..." (content not captured)` markers. Use
-  `browser_evaluate` to reach into same-origin frames if needed.
+  iframes appear as `- iframe "..." (content not captured)` markers. When
+  enabled, `browser_evaluate` can reach into same-origin frames if needed.
