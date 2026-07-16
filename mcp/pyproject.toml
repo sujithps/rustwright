@@ -14,6 +14,9 @@ dependencies = [
     "rustwright>=0.1.1",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
 [project.scripts]
 rustwright-mcp = "rustwright_mcp.server:main"
 

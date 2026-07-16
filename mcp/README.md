@@ -157,5 +157,8 @@ restart the session).
 
 - Single page, single browser session per server process.
 - Snapshot refs are regenerated on every snapshot; after a page mutation,
-  take a new snapshot before acting on refs.
-- Cross-origin iframes are not walked by the snapshot script yet.
+  take a new snapshot before acting on refs. Stale refs fail fast with a
+  message asking for a fresh snapshot.
+- The snapshot script does not walk iframes (any origin) or shadow DOM;
+  iframes appear as `- iframe "..." (content not captured)` markers. Use
+  `browser_evaluate` to reach into same-origin frames if needed.

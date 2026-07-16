@@ -78,7 +78,15 @@ SNAPSHOT_JS = r"""
 
   const walk = (el, depth) => {
     if (lines.length >= MAX_LINES) return;
-    if (SKIP_TAGS.has(el.tagName) || !isVisible(el)) return;
+    // SVG element tagNames are not uppercased; normalize before lookups.
+    const tag = String(el.tagName || '').toUpperCase();
+    if (SKIP_TAGS.has(tag) || el.namespaceURI === 'http://www.w3.org/2000/svg') return;
+    if (!isVisible(el)) return;
+    if (tag === 'IFRAME' || tag === 'FRAME') {
+      const label = el.getAttribute('title') || el.getAttribute('name') || el.getAttribute('src') || '';
+      lines.push(`${'  '.repeat(depth)}- iframe "${label.slice(0, MAX_NAME)}" (content not captured)`);
+      return;
+    }
 
     const role = roleOf(el);
     let emittedDepth = depth;

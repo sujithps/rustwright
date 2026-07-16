@@ -42,6 +42,13 @@ SNAPSHOT_CHAR_LIMIT = 30_000
 
 
 def _page():
+    if "page" in _session:
+        try:
+            # The user may have closed a headed window; detect a dead
+            # session and relaunch instead of failing every call.
+            _session["page"].evaluate("() => 1")
+        except Exception:
+            _teardown()
     if "page" not in _session:
         from rustwright.sync_api import sync_playwright
 
@@ -75,14 +82,36 @@ def _snapshot(page) -> str:
     return header + body
 
 
+def _teardown() -> None:
+    for close in (
+        lambda: _session["browser"].close(),
+        lambda: _session["pw"].stop(),
+    ):
+        try:
+            close()
+        except Exception:
+            pass
+    _session.clear()
+
+
 def _resolve(target: str) -> str:
-    """Map a snapshot ref like ``e12`` to its attribute selector; pass CSS through."""
+    """Map a snapshot ref like ``e12`` to its attribute selector; pass CSS through.
+
+    Refs fail fast when absent from the live DOM (stale snapshot) instead of
+    hitting the full action timeout.
+    """
     if target and target[0] == "e" and target[1:].isdigit():
         if not _session.get("snapshot_taken"):
             raise ValueError(
                 "No snapshot taken on this page yet; call browser_snapshot first"
             )
-        return f'[data-mcp-ref="{target}"]'
+        selector = f'[data-mcp-ref="{target}"]'
+        if _session["page"].query_selector(selector) is None:
+            raise ValueError(
+                f"Ref {target} is not on the current page (stale snapshot); "
+                "call browser_snapshot and use a fresh ref"
+            )
+        return selector
     return target
 
 
@@ -218,9 +247,7 @@ def browser_take_screenshot(path: Optional[str] = None, full_page: bool = False)
 def browser_close() -> str:
     """Close the browser. The next tool call starts a fresh session."""
     if "browser" in _session:
-        _session["browser"].close()
-        _session["pw"].stop()
-        _session.clear()
+        _teardown()
         return "Browser closed."
     return "No browser session was open."
 
