@@ -10,6 +10,15 @@ re-learning the surface. `browser_snapshot` returns an accessibility-style
 outline where interactive elements carry `[ref=eN]` handles; pass a ref (or a
 raw CSS selector) to the action tools.
 
+**Setting this up with an AI agent?** Tell your agent (Claude Code, Codex,
+Cursor, and others):
+
+> Fetch https://raw.githubusercontent.com/Skyvern-AI/rustwright/main/mcp/AGENT_SETUP.md
+> and follow the instructions to set up the Rustwright MCP server.
+
+[AGENT_SETUP.md](AGENT_SETUP.md) contains agent-facing install steps for every
+major MCP client, a verification step, and troubleshooting.
+
 ## Quick start (no clone needed)
 
 With [uv](https://docs.astral.sh/uv/) installed, register the server with

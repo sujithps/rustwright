@@ -153,6 +153,11 @@ Key environment variables: `RUSTWRIGHT_MCP_HEADLESS` (`0` runs headed),
 `RUSTWRIGHT_MCP_ALLOW_EVAL` (`1` exposes the `browser_evaluate` tool, off by
 default). Full setup, tool list, and configuration: [mcp/README.md](mcp/README.md).
 
+Setting up via an AI agent? Point it at the one-page instructions:
+[mcp/AGENT_SETUP.md](mcp/AGENT_SETUP.md) — "Fetch
+`https://raw.githubusercontent.com/Skyvern-AI/rustwright/main/mcp/AGENT_SETUP.md`
+and follow it" installs and verifies the server in any major MCP client.
+
 ## Remote browsers (Skyvern)
 
 Rustwright drives browsers — but you still need somewhere to run them. Skyvern (the team behind Rustwright) offers hosted **[Browser Sessions](https://www.skyvern.com/docs/developers/features/browser-sessions)** as a paid service that funds this project.
