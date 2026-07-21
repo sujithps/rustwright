@@ -4607,6 +4607,19 @@ def _sleep_until_next_poll(deadline: float, interval: float = 0.02) -> None:
         time.sleep(min(interval, remaining))
 
 
+def _actionability_probe_timeout(remaining_ms: float, timeout_disabled: bool = False) -> float:
+    # Budget a single actionability/state probe with the full remaining action time rather
+    # than a small fixed cap. A cap shorter than one remote-CDP round trip made every probe
+    # time out and abort the action while the outer deadline was still far away (observed on
+    # click/select_option over connect_over_cdp attach). Polling cadence is driven by
+    # _sleep_until_next_poll, not this bound, so widening it does not busy-loop. For an
+    # infinite wait (timeout<=0) keep a bounded cadence so owner-availability and locator
+    # handlers are still re-checked periodically.
+    if timeout_disabled:
+        return min(remaining_ms, 1_000.0)
+    return max(remaining_ms, 1.0)
+
+
 def _handle_event_wait_timeout(owner: Any, event: str, timeout_display: str, deadline: Optional[float]) -> None:
     if owner is not None:
         _raise_if_owner_unavailable(owner, use_close_reason=True)
@@ -21785,16 +21798,31 @@ return new Promise(resolve => {
         while True:
             _raise_if_owner_unavailable(self._page, method=method)
             remaining_ms = max((deadline - time.monotonic()) * 1000, 1.0)
-            command_timeout = min(1_000.0 if timeout_disabled else max(timeout_ms, 1.0), remaining_ms, 1_000.0)
+            command_timeout = _actionability_probe_timeout(remaining_ms, timeout_disabled)
             self._page._run_locator_handlers(deadline)
-            last_info = self._target_state(
-                command_timeout,
-                scroll=scroll or state in {"actionable", "scrollable"},
-                stable=requires_stable,
-                receives_events=state == "actionable",
-                stable_position_required=stable_position_required,
-                action_position=action_position,
-            )
+            try:
+                last_info = self._target_state(
+                    command_timeout,
+                    scroll=scroll or state in {"actionable", "scrollable"},
+                    stable=requires_stable,
+                    receives_events=state == "actionable",
+                    stable_position_required=stable_position_required,
+                    action_position=action_position,
+                )
+            except TimeoutError:
+                # A single actionability probe that exceeds its own budget is transient,
+                # not fatal: over a high-latency remote-CDP transport one probe's round
+                # trips can outlast a small fixed cap. Surface owner unavailability
+                # immediately, otherwise keep polling until the outer deadline instead of
+                # aborting the whole action (matches Playwright and the fill/select-apply
+                # loops). Doing this before the deadline check means a page/context/browser
+                # that closed mid-probe raises the precise owner error rather than a
+                # generic timeout when the deadline coincides.
+                _raise_if_owner_unavailable(self._page, method=method)
+                if time.monotonic() >= deadline:
+                    break
+                _sleep_until_next_poll(deadline)
+                continue
             if self._strict and not self._explicit_index:
                 self._raise_frame_strict_violation(last_info.get("frame_strict_violation"))
             count = int(last_info.get("count") or 0)
@@ -21857,9 +21885,22 @@ return new Promise(resolve => {
         while True:
             _raise_if_owner_unavailable(self._page, method=method)
             remaining_ms = max((deadline - time.monotonic()) * 1000, 1.0)
-            command_timeout = min(max(timeout_ms, 1.0), remaining_ms, 1_000.0)
+            command_timeout = _actionability_probe_timeout(remaining_ms)
             self._page._run_locator_handlers(deadline)
-            last_info = self._target_state(command_timeout)
+            try:
+                last_info = self._target_state(command_timeout)
+            except TimeoutError:
+                # A single fill-readiness probe timing out is transient over a slow
+                # remote-CDP transport: surface owner unavailability immediately, otherwise
+                # keep polling until the outer deadline (matches the fill/select-apply
+                # loops). Checking the owner before the deadline break means a closed
+                # page/context/browser raises the precise owner error rather than a generic
+                # timeout when the deadline coincides.
+                _raise_if_owner_unavailable(self._page, method=method)
+                if time.monotonic() >= deadline:
+                    break
+                _sleep_until_next_poll(deadline)
+                continue
             if self._strict and not self._explicit_index:
                 self._raise_frame_strict_violation(last_info.get("frame_strict_violation"))
             count = int(last_info.get("count") or 0)
@@ -23614,10 +23655,22 @@ return {{ ok: true, info }};
         last_info: dict[str, Any] = {}
         while True:
             remaining_ms = max((deadline - time.monotonic()) * 1000, 1.0)
-            command_timeout = min(max(timeout_ms, 1.0), remaining_ms, 1_000.0)
+            command_timeout = _actionability_probe_timeout(remaining_ms)
             self._page._run_locator_handlers(deadline)
             try:
                 result = self._eval(fill_script, command_timeout)
+            except TimeoutError:
+                # A single fill-apply probe timing out is transient over a slow remote-CDP
+                # transport: one probe's CDP round trips can outlast the per-probe budget.
+                # Surface owner unavailability immediately, otherwise keep polling until the
+                # outer deadline instead of aborting the whole action (matches Playwright and
+                # the sibling wait/select loops). TimeoutError subclasses Error, so this must
+                # precede the generic Error handler below.
+                _raise_if_owner_unavailable(self._page, method=_locator_method_for_action(action))
+                if time.monotonic() >= deadline:
+                    break
+                _sleep_until_next_poll(deadline)
+                continue
             except Error as exc:
                 if "No element matches locator" not in str(exc):
                     raise
@@ -24397,10 +24450,13 @@ return {{ ok: true, selected: Array.from(el.selectedOptions).map(option => optio
         deadline = started + max(timeout_ms, 0.0) / 1000
         while True:
             remaining_ms = max((deadline - time.monotonic()) * 1000, 1.0)
-            command_timeout = min(max(timeout_ms, 1.0), remaining_ms, 1_000.0)
+            command_timeout = _actionability_probe_timeout(remaining_ms)
             try:
                 result = self._eval(select_script, command_timeout, method=method)
             except TimeoutError:
+                # A transient select-apply probe timeout is retried until the outer deadline
+                # (see the fill-apply loop), but owner unavailability is surfaced immediately.
+                _raise_if_owner_unavailable(self._page, method=method)
                 if time.monotonic() >= deadline:
                     break
                 _sleep_until_next_poll(deadline)

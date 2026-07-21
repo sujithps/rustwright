@@ -10229,6 +10229,167 @@ def test_locator_click_waits_for_delayed_element(page):
     assert page.evaluate("document.body.dataset.clicked") == "yes"
 
 
+def test_wait_for_single_retries_transient_actionability_probe_timeout(page, monkeypatch):
+    # A single actionability probe can exceed its own budget over a high-latency remote-CDP
+    # transport (connect_over_cdp attach): its several CDP round trips outlast the per-probe
+    # budget even though the outer action deadline is still far off. The wait loop must treat
+    # that probe TimeoutError as transient and keep polling, not abort the whole action.
+    from rustwright.sync_api import Locator
+
+    page.set_content("<button id='go' onclick=\"document.body.dataset.clicked='yes'\">go</button>")
+
+    real_target_state = Locator._target_state
+    probe = {"calls": 0, "timed_out": 0}
+
+    def flaky_target_state(self, timeout=None, **kwargs):
+        probe["calls"] += 1
+        # Time out only the first probe regardless of how large its budget is, so the retry
+        # path itself is exercised rather than merely the enlarged per-probe budget.
+        if probe["timed_out"] == 0:
+            probe["timed_out"] += 1
+            raise TimeoutError(f"timed out after {int(timeout)} ms")
+        return real_target_state(self, timeout, **kwargs)
+
+    monkeypatch.setattr(Locator, "_target_state", flaky_target_state)
+
+    page.click("#go", timeout=30_000)
+
+    assert page.evaluate("document.body.dataset.clicked") == "yes"
+    assert probe["timed_out"] == 1
+    assert probe["calls"] >= 2  # retried after the transient probe timeout
+
+
+def test_fill_apply_loop_retries_transient_probe_timeout(page, monkeypatch):
+    # The fill-apply loop performs the actual fill via _eval. A first probe whose CDP round
+    # trips outlast the per-probe budget raises TimeoutError; the loop must retry until the
+    # outer deadline instead of re-raising that transient timeout as a fatal error.
+    from rustwright.sync_api import Locator
+
+    page.set_content("<input id='name'>")
+
+    real_eval = Locator._eval
+    probe = {"calls": 0, "timed_out": 0}
+
+    def flaky_eval(self, body, timeout=None, *, method=None):
+        if "nonFillableInputTypes" in body:
+            probe["calls"] += 1
+            if probe["timed_out"] == 0:
+                probe["timed_out"] += 1
+                raise TimeoutError(f"timed out after {int(timeout)} ms")
+        return real_eval(self, body, timeout, method=method)
+
+    monkeypatch.setattr(Locator, "_eval", flaky_eval)
+
+    page.fill("#name", "Ada", timeout=30_000)
+
+    assert page.locator("#name").input_value() == "Ada"
+    assert probe["timed_out"] == 1
+    assert probe["calls"] >= 2  # retried after the transient probe timeout
+
+
+def test_select_apply_loop_retries_transient_probe_timeout(page, monkeypatch):
+    # The select-apply loop performs the final selection via _eval. A first transient probe
+    # timeout must be retried until the outer deadline rather than aborting select_option.
+    from rustwright.sync_api import Locator
+
+    page.set_content(
+        "<select id='sel'><option value='a'>A</option><option value='b'>B</option></select>"
+    )
+
+    real_eval = Locator._eval
+    probe = {"calls": 0, "timed_out": 0}
+
+    def flaky_eval(self, body, timeout=None, *, method=None):
+        if "foundValues" in body:
+            probe["calls"] += 1
+            if probe["timed_out"] == 0:
+                probe["timed_out"] += 1
+                raise TimeoutError(f"timed out after {int(timeout)} ms")
+        return real_eval(self, body, timeout, method=method)
+
+    monkeypatch.setattr(Locator, "_eval", flaky_eval)
+
+    assert page.select_option("#sel", "b", timeout=30_000) == ["b"]
+    assert probe["timed_out"] == 1
+    assert probe["calls"] >= 2  # retried after the transient probe timeout
+
+
+def test_fill_apply_loop_surfaces_outer_deadline_on_persistent_probe_timeout(page, monkeypatch):
+    # When every fill-apply probe keeps timing out, the loop must still end at the outer
+    # deadline with its own editable-timeout message (not the raw per-probe timeout) and
+    # without busy-looping past the deadline.
+    from rustwright.sync_api import Locator
+
+    page.set_content("<input id='name'>")
+
+    real_eval = Locator._eval
+
+    def always_timeout_eval(self, body, timeout=None, *, method=None):
+        if "nonFillableInputTypes" in body:
+            raise TimeoutError(f"timed out after {int(timeout)} ms")
+        return real_eval(self, body, timeout, method=method)
+
+    monkeypatch.setattr(Locator, "_eval", always_timeout_eval)
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="editable"):
+        page.fill("#name", "Ada", timeout=300)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5  # honored the ~300ms outer deadline; no runaway busy-loop
+
+
+def test_fill_apply_loop_propagates_owner_crash_on_probe_timeout(page, monkeypatch):
+    # A probe timeout must not mask owner unavailability: if the page crashes while a fill
+    # probe is timing out, the loop surfaces the crash immediately instead of polling until
+    # the outer deadline.
+    from rustwright.sync_api import Locator
+
+    page.set_content("<input id='name'>")
+
+    real_eval = Locator._eval
+
+    def crashing_probe_eval(self, body, timeout=None, *, method=None):
+        if "nonFillableInputTypes" in body:
+            self._page._crashed = True
+            raise TimeoutError(f"timed out after {int(timeout)} ms")
+        return real_eval(self, body, timeout, method=method)
+
+    monkeypatch.setattr(Locator, "_eval", crashing_probe_eval)
+
+    try:
+        with pytest.raises(Error, match="Page crashed"):
+            page.fill("#name", "Ada", timeout=30_000)
+    finally:
+        page._crashed = False
+
+
+def test_wait_for_single_propagates_owner_crash_when_probe_times_out_at_deadline(page, monkeypatch):
+    # Owner unavailability must win over a probe timeout even when the timeout coincides
+    # with the outer deadline. The top-of-loop owner check already covers the retry path,
+    # but a probe that both crashes the owner and outlasts the deadline would otherwise
+    # take the deadline-break path and raise a generic actionability timeout. The except
+    # block now surfaces the crash first, matching the fill/select-apply loops.
+    from rustwright.sync_api import Locator
+
+    page.set_content("<button id='go'>go</button>")
+
+    def crashing_probe(self, timeout=None, **kwargs):
+        # Crash the owner and sleep past the tiny outer deadline before timing out, so the
+        # loop reaches the deadline break rather than re-polling on the next iteration.
+        self._page._crashed = True
+        time.sleep(0.05)
+        raise TimeoutError(f"timed out after {int(timeout)} ms")
+
+    monkeypatch.setattr(Locator, "_target_state", crashing_probe)
+
+    try:
+        with pytest.raises(Error, match="Page crashed"):
+            page.click("#go", timeout=10)
+    finally:
+        page._crashed = False
+
+
 def test_locator_fill_waits_for_delayed_editable(page):
     page.set_content(
         """
@@ -20657,10 +20818,14 @@ def test_cli_top_level_version_help_and_explicit_unsupported_commands(capsys):
 
     assert cli.main(["help"], program="playwright") == 0
     help_output = capsys.readouterr()
-    assert "ff/firefox" in help_output.out
-    assert "wk/webkit" in help_output.out
+    assert "Browser session (persistent):" in help_output.out
+    assert "Playwright-compatible tools:" in help_output.out
     assert "uninstall" in help_output.out
     assert "trace" in help_output.out
+
+    assert cli.main(["firefox", "https://example.test"], program="playwright") == 1
+    unsupported_output = capsys.readouterr()
+    assert "firefox is not implemented" in unsupported_output.err
 
     assert cli.main(["trace"], program="playwright") == 0
     trace_output = capsys.readouterr()
@@ -20856,191 +21021,35 @@ def test_cli_codegen_python_pytest_includes_context_marker(tmp_path: Path):
     compile(source, str(output), "exec")
 
 
-def test_cli_open_launches_direct_cdp_browser_with_playwright_options(monkeypatch, tmp_path: Path, capsys):
+def test_cli_open_routes_to_persistent_session_cli(monkeypatch):
     from rustwright import cli
 
-    opened_file = tmp_path / "index.html"
-    opened_file.write_text("<title>CLI</title>", encoding="utf-8")
-    storage_path = tmp_path / "storage.json"
-    save_storage_path = tmp_path / "saved-storage.json"
-    har_path = tmp_path / "open.har"
+    calls = []
 
-    class FakePage:
-        def __init__(self):
-            self.url = ""
-            self.goto_url = None
+    def fake_agent_main(argv):
+        calls.append(list(argv))
+        return 0
 
-        def goto(self, url: str):
-            self.goto_url = url
-            self.url = url
+    monkeypatch.setattr(cli, "_agent_main", fake_agent_main)
 
-    class FakeContext:
-        def __init__(self):
-            self.pages = []
-            self.default_timeout = None
-            self.default_navigation_timeout = None
-            self.storage_state_path = None
-            self.closed = False
+    assert cli.main(["open", "https://example.test"], program="playwright") == 0
+    assert cli.main(["--session", "work", "open"], program="playwright") == 0
 
-        def new_page(self):
-            page = FakePage()
-            self.pages.append(page)
-            return page
-
-        def set_default_timeout(self, timeout: float):
-            self.default_timeout = timeout
-
-        def set_default_navigation_timeout(self, timeout: float):
-            self.default_navigation_timeout = timeout
-
-        def storage_state(self, *, path: str):
-            self.storage_state_path = path
-
-        def close(self):
-            self.closed = True
-
-    class FakeBrowser:
-        def __init__(self):
-            self.context = FakeContext()
-            self.new_context_options = None
-            self.closed = False
-
-        def new_context(self, **options):
-            self.new_context_options = options
-            return self.context
-
-        def close(self):
-            self.closed = True
-
-        def is_connected(self):
-            return True
-
-    class FakeChromium:
-        def __init__(self):
-            self.browser = FakeBrowser()
-            self.launch_options = None
-
-        def launch(self, **options):
-            self.launch_options = options
-            return self.browser
-
-    class FakePlaywright:
-        def __init__(self):
-            self.chromium = FakeChromium()
-            self.devices = {
-                "Pixel 5": {
-                    "user_agent": "Pixel UA",
-                    "viewport": {"width": 393, "height": 851},
-                    "device_scale_factor": 2.75,
-                    "is_mobile": True,
-                    "has_touch": True,
-                    "default_browser_type": "chromium",
-                }
-            }
-
-    class FakeSyncPlaywright:
-        def __init__(self, playwright):
-            self.playwright = playwright
-
-        def __enter__(self):
-            return self.playwright
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-    fake_playwright = FakePlaywright()
-    monkeypatch.setattr(cli, "sync_playwright", lambda: FakeSyncPlaywright(fake_playwright))
-    monkeypatch.setenv("PWTEST_CLI_HEADLESS", "1")
-    monkeypatch.setenv("PWTEST_CLI_EXECUTABLE_PATH", "/tmp/chromium")
-    monkeypatch.setenv("PWTEST_CLI_EXIT_AFTER_TIMEOUT", "0")
-
-    result = cli.open(
-        [
-            str(opened_file),
-            "--device",
-            "Pixel 5",
-            "--viewport-size",
-            "800, 600",
-            "--geolocation",
-            "37.819722,-122.478611",
-            "--color-scheme",
-            "dark",
-            "--lang",
-            "en-GB",
-            "--timezone",
-            "Europe/Rome",
-            "--user-agent",
-            "Custom UA",
-            "--ignore-https-errors",
-            "--block-service-workers",
-            "--load-storage",
-            str(storage_path),
-            "--save-har",
-            str(har_path),
-            "--save-har-glob",
-            "**/*.json",
-            "--save-storage",
-            str(save_storage_path),
-            "--proxy-server",
-            "http://proxy.test:3128",
-            "--proxy-bypass",
-            ".internal",
-            "--timeout",
-            "1234",
-        ]
-    )
-
-    context = fake_playwright.chromium.browser.context
-    assert result == 0
-    assert fake_playwright.chromium.launch_options == {
-        "headless": True,
-        "executable_path": "/tmp/chromium",
-        "proxy": {"server": "http://proxy.test:3128", "bypass": ".internal"},
-    }
-    assert fake_playwright.chromium.browser.new_context_options["viewport"] == {"width": 800, "height": 600}
-    assert fake_playwright.chromium.browser.new_context_options["geolocation"] == {
-        "latitude": 37.819722,
-        "longitude": -122.478611,
-    }
-    assert fake_playwright.chromium.browser.new_context_options["permissions"] == ["geolocation"]
-    assert fake_playwright.chromium.browser.new_context_options["color_scheme"] == "dark"
-    assert fake_playwright.chromium.browser.new_context_options["locale"] == "en-GB"
-    assert fake_playwright.chromium.browser.new_context_options["timezone_id"] == "Europe/Rome"
-    assert fake_playwright.chromium.browser.new_context_options["user_agent"] == "Custom UA"
-    assert fake_playwright.chromium.browser.new_context_options["ignore_https_errors"] is True
-    assert fake_playwright.chromium.browser.new_context_options["storage_state"] == str(storage_path)
-    assert fake_playwright.chromium.browser.new_context_options["record_har_path"] == str(har_path.resolve())
-    assert fake_playwright.chromium.browser.new_context_options["record_har_url_filter"] == "**/*.json"
-    assert fake_playwright.chromium.browser.new_context_options["record_har_mode"] == "minimal"
-    assert fake_playwright.chromium.browser.new_context_options["service_workers"] == "block"
-    assert context.default_timeout == 1234
-    assert context.default_navigation_timeout == 1234
-    assert context.pages[0].goto_url == opened_file.resolve().as_uri()
-    assert context.storage_state_path == str(save_storage_path)
-    assert context.closed is True
-    assert fake_playwright.chromium.browser.closed is True
-    assert "Rustwright opened" in capsys.readouterr().out
+    assert calls == [
+        ["open", "https://example.test"],
+        ["--session", "work", "open"],
+    ]
 
 
-def test_cli_open_rejects_unsupported_browser(monkeypatch, capsys):
+def test_cli_open_rejects_unsupported_browser(monkeypatch, tmp_path: Path, capsys):
     from rustwright import cli
 
-    class FakePlaywright:
-        devices = {}
+    monkeypatch.setenv("RUSTWRIGHT_AGENT_RUNTIME_DIR", str(tmp_path))
 
-    class FakeSyncPlaywright:
-        def __enter__(self):
-            return FakePlaywright()
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-    monkeypatch.setattr(cli, "sync_playwright", lambda: FakeSyncPlaywright())
-
-    result = cli.open(["-b", "firefox", "https://example.test"])
+    result = cli.main(["open", "-b", "firefox", "https://example.test"], program="playwright")
 
     output = capsys.readouterr()
-    assert result == 1
+    assert result == 2
     assert "firefox is not implemented" in output.err
 
 
@@ -21155,29 +21164,30 @@ def test_cli_screenshot_and_pdf_use_headless_cdp_capture(monkeypatch, tmp_path: 
     assert "Saving as pdf into" in output
 
 
-def test_cli_browser_aliases_delegate_to_open(monkeypatch):
+def test_cli_browser_aliases_delegate_to_open(monkeypatch, capsys):
     from rustwright import cli
 
     calls = []
-    programs = []
 
-    def fake_open(argv, *, program="playwright"):
-        calls.append(argv)
-        programs.append(program)
+    def fake_agent_main(argv):
+        calls.append(list(argv))
         return 0
 
-    monkeypatch.setattr(cli, "open", fake_open)
+    monkeypatch.setattr(cli, "_agent_main", fake_agent_main)
 
     assert cli.main(["cr", "https://example.test"], program="patchright") == 0
-    assert cli.main(["firefox", "https://example.test"], program="patchright") == 0
-    assert cli.main(["webkit", "https://example.test"], program="patchright") == 0
-
+    assert cli.main(["chromium", "https://example.test"], program="patchright") == 0
     assert calls == [
-        ["--browser", "chromium", "https://example.test"],
-        ["--browser", "firefox", "https://example.test"],
-        ["--browser", "webkit", "https://example.test"],
+        ["open", "--browser", "chromium", "https://example.test"],
+        ["open", "--browser", "chromium", "https://example.test"],
     ]
-    assert programs == ["patchright", "patchright", "patchright"]
+
+    assert cli.main(["firefox", "https://example.test"], program="patchright") == 1
+    assert cli.main(["webkit", "https://example.test"], program="patchright") == 1
+    err = capsys.readouterr().err
+    assert "firefox is not implemented" in err
+    assert "webkit is not implemented" in err
+    assert len(calls) == 2
 
 
 def test_cli_show_trace_renders_static_viewer(tmp_path: Path):
@@ -24021,6 +24031,62 @@ def test_async_cancelled_create_target_response_closes_orphan_and_normal_page_su
             await browser.close()
 
     asyncio.run(run())
+
+
+def test_locator_eval_does_not_monopolize_gil_while_blocking(page):
+    # Invariant guard for the PR #95 GIL finding: while native ``locator_eval`` blocks
+    # on a slow in-page evaluate, it must not hold the Python GIL, so other Python
+    # threads keep running. This holds because ``locator_eval`` runs the CDP round-trip
+    # under ``py.detach`` (matching ``click`` / ``locator_eval_handle``); ``block_on``
+    # also detaches internally, so the property predates and survives the binding-layer
+    # change -- this test locks it in against future refactors that could hold the GIL.
+    #
+    # The probe is a pure-Python busy-increment thread (no I/O -- ``time.sleep`` would
+    # release the GIL regardless). If ``locator_eval`` ever held the GIL for the whole
+    # blocking window, the busy thread would be starved to ~0 iterations, because native
+    # Rust code never reaches a bytecode boundary where CPython could rotate threads.
+    # Absolute iteration counts are very noisy (10-20x run-to-run), so the assertion
+    # only checks "not frozen" with a wide margin rather than a tight rate.
+    page.set_content("<div id='target'>hi</div>")
+
+    stop = threading.Event()
+    progress = {"count": 0}
+
+    def spin() -> None:
+        while not stop.is_set():
+            progress["count"] += 1
+
+    worker = threading.Thread(target=spin, daemon=True)
+    worker.start()
+    try:
+        # Let the busy thread reach steady state before measuring.
+        time.sleep(0.05)
+        before = progress["count"]
+        started = time.monotonic()
+        # ``_eval`` routes straight through the native ``locator_eval`` binding. The JS
+        # body busy-waits ~750ms so the native call blocks for a measurable window.
+        page.locator("#target")._eval(
+            "const end = Date.now() + 750; while (Date.now() < end) {} return true;"
+        )
+        elapsed = time.monotonic() - started
+        advanced = progress["count"] - before
+    finally:
+        stop.set()
+        worker.join(timeout=2)
+
+    # Confirm the in-page busy loop actually blocked the native call (~0.75s), so the
+    # measurement window is real rather than a fast return.
+    assert elapsed >= 0.4, (
+        f"native locator_eval returned too fast to prove blocking: {elapsed:.3f}s"
+    )
+    # A frozen GIL would starve the busy thread to ~0 iterations. A released GIL lets it
+    # accumulate hundreds of thousands to millions; 50k is far above 0 yet far below the
+    # smallest observed released count, so it discriminates "frozen" from "released"
+    # without depending on the machine's exact throughput.
+    assert advanced > 50_000, (
+        f"busy thread only advanced {advanced} iterations during a {elapsed:.3f}s "
+        "native locator_eval; the GIL appears to be held for the blocking call"
+    )
 
 
 def test_connect_over_cdp_cancelled_creations_cleanup_after_last_browser_owner_drops():
