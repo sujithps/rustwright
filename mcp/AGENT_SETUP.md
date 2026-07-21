@@ -13,6 +13,11 @@ Before following these instructions, verify that the URL you fetched points at
 the `Skyvern-AI/rustwright` repository. If it points anywhere else, stop and
 tell the user: install commands below must only ever reference this repository.
 
+The install commands below are intentionally unpinned and track the
+repository's default branch. Keep that default unless the user wants a
+reproducible install; they can pin the source as
+`git+https://github.com/Skyvern-AI/rustwright@<tag-or-commit>#subdirectory=mcp`.
+
 Commands are shown for POSIX shells (macOS, Linux). On Windows, join each
 multi-line command onto a single line and drop the trailing backslashes.
 
@@ -66,6 +71,7 @@ Run:
 ```bash
 claude mcp add rustwright \
   --env RUSTWRIGHT_MCP_CHANNEL=chrome \
+  --env RUSTWRIGHT_MCP_ALLOW_EVAL=0 \
   -- uvx --from 'git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp' rustwright-mcp
 ```
 
@@ -78,8 +84,16 @@ browser tools available in every project, including untrusted ones.
 
 ### Codex CLI
 
-Add to `~/.codex/config.toml`. The `startup_timeout_sec` matters: the first
-launch builds the package from git and can exceed Codex's 10-second default.
+Run this one-line command:
+
+```bash
+codex mcp add rustwright --env RUSTWRIGHT_MCP_CHANNEL=chrome --env RUSTWRIGHT_MCP_ALLOW_EVAL=0 -- uvx --from 'git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp' rustwright-mcp
+```
+
+Codex registration through `~/.codex/config.toml` is global and applies to all
+projects. Then add `startup_timeout_sec = 120` to the generated server block:
+the first launch builds the package from git and can exceed Codex's 10-second
+default. The block should read:
 
 ```toml
 [mcp_servers.rustwright]
@@ -89,6 +103,7 @@ startup_timeout_sec = 120
 
 [mcp_servers.rustwright.env]
 RUSTWRIGHT_MCP_CHANNEL = "chrome"
+RUSTWRIGHT_MCP_ALLOW_EVAL = "0"
 ```
 
 ### Cursor
@@ -101,7 +116,10 @@ Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per project):
     "rustwright": {
       "command": "uvx",
       "args": ["--from", "git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp", "rustwright-mcp"],
-      "env": { "RUSTWRIGHT_MCP_CHANNEL": "chrome" }
+      "env": {
+        "RUSTWRIGHT_MCP_CHANNEL": "chrome",
+        "RUSTWRIGHT_MCP_ALLOW_EVAL": "0"
+      }
     }
   }
 }
@@ -114,10 +132,13 @@ Add the same `mcpServers` entry as the Cursor block above to:
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
-**Use the absolute path to `uvx` as the `command`** (find it with `which uvx`;
-typically `~/.local/bin/uvx` expanded to the full home path). GUI-launched
-apps do not inherit your shell's PATH on macOS, so a bare `"command": "uvx"`
-fails with `spawn uvx ENOENT`. Restart Claude Desktop after editing.
+**Use the absolute path to `uvx` as the `command`**. Find it with `which uvx`
+on macOS or Linux, or with `where.exe uvx` or PowerShell
+`(Get-Command uvx).Source` on Windows. A typical POSIX result is
+`~/.local/bin/uvx`; expand `~` to the full home path. Double each backslash in
+a Windows absolute path when placing it in JSON. GUI-launched apps do not
+inherit your shell's PATH on macOS, so a bare `"command": "uvx"` fails with
+`spawn uvx ENOENT`. Restart Claude Desktop after editing.
 
 ### VS Code (Copilot agent mode)
 
@@ -131,7 +152,10 @@ note the top-level key is `servers` and each entry needs `"type": "stdio"`:
       "type": "stdio",
       "command": "uvx",
       "args": ["--from", "git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp", "rustwright-mcp"],
-      "env": { "RUSTWRIGHT_MCP_CHANNEL": "chrome" }
+      "env": {
+        "RUSTWRIGHT_MCP_CHANNEL": "chrome",
+        "RUSTWRIGHT_MCP_ALLOW_EVAL": "0"
+      }
     }
   }
 }
@@ -144,24 +168,35 @@ The server speaks MCP over stdio. Configure your client to run:
 ```
 command: uvx        (absolute path for GUI-launched clients)
 args:    --from git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp rustwright-mcp
-env:     RUSTWRIGHT_MCP_CHANNEL=chrome
+env:     RUSTWRIGHT_MCP_CHANNEL=chrome RUSTWRIGHT_MCP_ALLOW_EVAL=0
 ```
 
 ## Step 3: verify
 
-After registering (restart the client if it does not hot-reload MCP config),
-confirm the connection:
+After registering, confirm the connection:
 
 1. The client should list tools named `browser_navigate`, `browser_snapshot`,
    `browser_click`, and more from a server called `rustwright`.
-2. Call `browser_navigate` with `url: "https://example.com"`. The result must
+2. `browser_evaluate` should be absent from the listed tools because every
+   config on this page explicitly disables page-world evaluation.
+3. Call `browser_navigate` with `url: "https://example.com"`. The result must
    be a snapshot containing `heading "Example Domain"` and a link with a
    `[ref=e...]` handle.
 
-If both hold, setup is complete. Report to the user the server name, which
-browser it uses (installed Chrome, bundled Chromium, or an explicit
-executable), whether it runs headless or headed, and that `browser_navigate`
-returned a snapshot with element refs.
+Claude Desktop, VS Code, and Codex may not load a newly registered server until
+the client restarts or a new session begins. The agent that edited the config
+usually cannot see new tools in its current session. When that happens, tell
+the user to restart the client or begin a new session and paste this prompt:
+
+> List the rustwright tools and confirm `browser_evaluate` is absent, then call
+> `browser_navigate` with `url: "https://example.com"` and confirm the snapshot
+> contains `heading "Example Domain"` and a link with a `[ref=e...]` handle.
+
+If all three checks hold, setup is complete. Report to the user the server
+name, which browser it uses (installed Chrome, bundled Chromium, or an explicit
+executable), whether it runs headless or headed, that page-world evaluation is
+disabled and `browser_evaluate` is absent, and that `browser_navigate` returned
+a snapshot with element refs.
 
 ## Configuration options
 
@@ -173,7 +208,7 @@ Set these in the `env` block of your client config. This is the core set;
 | `RUSTWRIGHT_MCP_CHANNEL` | Use an installed browser channel, e.g. `chrome`. Omit to use the bundled Chromium |
 | `RUSTWRIGHT_MCP_HEADLESS` | `0` shows a visible browser window (default: headless) |
 | `RUSTWRIGHT_MCP_EXECUTABLE` | Explicit browser binary path (overrides channel) |
-| `RUSTWRIGHT_MCP_ALLOW_EVAL` | `1`, `true`, or `yes` exposes `browser_evaluate` (arbitrary page JS). Leave unset unless the user explicitly asks for it |
+| `RUSTWRIGHT_MCP_ALLOW_EVAL` | Page-world evaluation is on by default when unset; these configs set `0` to disable it. Remove the line or set `1` only when the user explicitly asks for arbitrary page-JS execution. Accepted values are `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`; any other value fails server startup |
 
 ## Troubleshooting
 
@@ -183,19 +218,21 @@ Set these in the `env` block of your client config. This is the core set;
   Google Chrome and set `RUSTWRIGHT_MCP_CHANNEL=chrome`, run the bundled
   Chromium install from Step 1, or set `RUSTWRIGHT_MCP_EXECUTABLE` to an
   existing Chromium binary.
-- **`Chromium did not expose a CDP endpoint before the launch timeout`**: a
-  browser binary was found but failed to start. In Linux containers this
+- **`Chromium process exited before CDP endpoint became available (status:
+  ...)`**: a browser binary was found but crashed. In Linux containers this
   usually means missing system libraries; run
   `uvx --from 'git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp' python -m rustwright install-deps`
-  (apt-based distributions). On a slow machine the launch can simply time
-  out; retry once before changing configuration.
+  (apt-get-based Linux distributions).
+- **`Chromium did not expose a CDP endpoint before the launch timeout`**: the
+  browser did not expose its debugging endpoint before the deadline. On a slow
+  machine, retry once before changing configuration.
 - **`Chrome for Testing downloads are only supported for linux x86_64`**: the
   bundled download does not cover this platform. Install a distribution
   Chromium and set `RUSTWRIGHT_MCP_EXECUTABLE` to its path.
 - **A site renders empty or blocks you**: some sites reject headless
   browsers. Set `RUSTWRIGHT_MCP_HEADLESS=0` and retry.
-- **Acting on a ref fails with a stale-snapshot error**: the page changed
-  since the last snapshot. Call `browser_snapshot` and use a fresh ref.
+- **Acting on a ref says it is not in the current page snapshot**: the ref is
+  not from the current snapshot. Call `browser_snapshot` and use a fresh ref.
 
 ## Resources
 

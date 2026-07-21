@@ -164,6 +164,11 @@ PyPI package coming soon — the command shrinks to `uvx rustwright-mcp`.
 
 See [the MCP guide](mcp/README.md) for the full tool list and configuration.
 
+Setting up via an AI agent? Point it at the one-page instructions in
+[mcp/AGENT_SETUP.md](mcp/AGENT_SETUP.md): telling the agent "Fetch
+`https://raw.githubusercontent.com/Skyvern-AI/rustwright/HEAD/mcp/AGENT_SETUP.md`
+and follow it" installs and verifies the server in any major MCP client.
+
 ### CLI — drive a browser from your shell
 
 Drive one persistent Chromium session straight from the `rustwright` command, with no application code.
@@ -185,11 +190,6 @@ rustwright close
 - Use `--session NAME` for named browser sessions.
 
 See [the agent interface guide](docs/agent-interfaces.md) for every verb, flag, and security detail.
-
-Setting up via an AI agent? Point it at the one-page instructions in
-[mcp/AGENT_SETUP.md](mcp/AGENT_SETUP.md): telling the agent "Fetch
-`https://raw.githubusercontent.com/Skyvern-AI/rustwright/HEAD/mcp/AGENT_SETUP.md`
-and follow it" installs and verifies the server in any major MCP client.
 
 ## Remote browsers (Skyvern)
 
