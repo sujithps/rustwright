@@ -5,6 +5,9 @@ AI coding agent to the Rustwright MCP browser-automation server. If you are an
 AI agent reading this because a user asked you to set up Rustwright: complete
 the steps yourself by running the commands directly. Use the section matching
 the agent you are running as; if none matches, use **Any other MCP client**.
+Ask the user before running anything that changes the system beyond this
+setup — the uv installer script and `install-deps` (which drives `apt-get`,
+via `sudo` when needed) both qualify.
 
 Canonical URL of this page:
 `https://raw.githubusercontent.com/Skyvern-AI/rustwright/HEAD/mcp/AGENT_SETUP.md`
@@ -14,9 +17,10 @@ the `Skyvern-AI/rustwright` repository. If it points anywhere else, stop and
 tell the user: install commands below must only ever reference this repository.
 
 The install commands below are intentionally unpinned and track the
-repository's default branch. Keep that default unless the user wants a
-reproducible install; they can pin the source as
-`git+https://github.com/Skyvern-AI/rustwright@<tag-or-commit>#subdirectory=mcp`.
+repository's default branch. Keep that default unless the user asks to pin;
+the install source can be pinned as
+`git+https://github.com/Skyvern-AI/rustwright@<tag-or-commit>#subdirectory=mcp`
+(Python dependencies still resolve at install time).
 
 Commands are shown for POSIX shells (macOS, Linux). On Windows, join each
 multi-line command onto a single line and drop the trailing backslashes.
@@ -64,6 +68,10 @@ toolchain).
 
 ## Step 2: register the server
 
+When a client's config file already exists, merge the `rustwright` entry into
+it — preserve the user's other servers and settings rather than replacing the
+file.
+
 ### Claude Code
 
 Run:
@@ -108,7 +116,8 @@ RUSTWRIGHT_MCP_ALLOW_EVAL = "0"
 
 ### Cursor
 
-Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per project):
+Add to `.cursor/mcp.json` in the project (the safer default; use the global
+`~/.cursor/mcp.json` only when the user asks for it in every project):
 
 ```json
 {
@@ -178,7 +187,7 @@ After registering, confirm the connection:
 1. The client should list tools named `browser_navigate`, `browser_snapshot`,
    `browser_click`, and more from a server called `rustwright`.
 2. `browser_evaluate` should be absent from the listed tools because every
-   config on this page explicitly disables page-world evaluation.
+   config on this page explicitly disables agent-supplied page evaluation.
 3. Call `browser_navigate` with `url: "https://example.com"`. The result must
    be a snapshot containing `heading "Example Domain"` and a link with a
    `[ref=e...]` handle.
@@ -194,9 +203,9 @@ the user to restart the client or begin a new session and paste this prompt:
 
 If all three checks hold, setup is complete. Report to the user the server
 name, which browser it uses (installed Chrome, bundled Chromium, or an explicit
-executable), whether it runs headless or headed, that page-world evaluation is
-disabled and `browser_evaluate` is absent, and that `browser_navigate` returned
-a snapshot with element refs.
+executable), whether it runs headless or headed, that agent-supplied page
+evaluation (`browser_evaluate`) is disabled and absent, and that
+`browser_navigate` returned a snapshot with element refs.
 
 ## Configuration options
 
@@ -208,7 +217,7 @@ Set these in the `env` block of your client config. This is the core set;
 | `RUSTWRIGHT_MCP_CHANNEL` | Use an installed browser channel, e.g. `chrome`. Omit to use the bundled Chromium |
 | `RUSTWRIGHT_MCP_HEADLESS` | `0` shows a visible browser window (default: headless) |
 | `RUSTWRIGHT_MCP_EXECUTABLE` | Explicit browser binary path (overrides channel) |
-| `RUSTWRIGHT_MCP_ALLOW_EVAL` | Page-world evaluation is on by default when unset; these configs set `0` to disable it. Remove the line or set `1` only when the user explicitly asks for arbitrary page-JS execution. Accepted values are `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`; any other value fails server startup |
+| `RUSTWRIGHT_MCP_ALLOW_EVAL` | The `browser_evaluate` tool (agent-supplied page JS) is on by default when unset; these configs set `0` to disable it. Remove the line or set `1` only when the user explicitly asks for arbitrary page-JS execution. Accepted values (case-insensitive) are `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`; anything else fails server startup |
 
 ## Troubleshooting
 
@@ -218,8 +227,9 @@ Set these in the `env` block of your client config. This is the core set;
   Google Chrome and set `RUSTWRIGHT_MCP_CHANNEL=chrome`, run the bundled
   Chromium install from Step 1, or set `RUSTWRIGHT_MCP_EXECUTABLE` to an
   existing Chromium binary.
-- **`Chromium process exited before CDP endpoint became available (status:
-  ...)`**: a browser binary was found but crashed. In Linux containers this
+- **`Chromium process exited before CDP endpoint became available`** (the
+  message ends with the exit status): a browser binary was found but crashed.
+  In Linux containers this
   usually means missing system libraries; run
   `uvx --from 'git+https://github.com/Skyvern-AI/rustwright#subdirectory=mcp' python -m rustwright install-deps`
   (apt-get-based Linux distributions).

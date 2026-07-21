@@ -167,7 +167,8 @@ See [the MCP guide](mcp/README.md) for the full tool list and configuration.
 Setting up via an AI agent? Point it at the one-page instructions in
 [mcp/AGENT_SETUP.md](mcp/AGENT_SETUP.md): telling the agent "Fetch
 `https://raw.githubusercontent.com/Skyvern-AI/rustwright/HEAD/mcp/AGENT_SETUP.md`
-and follow it" installs and verifies the server in any major MCP client.
+and follow it" installs the server in any major MCP client and walks through
+verification.
 
 ### CLI — drive a browser from your shell
 
