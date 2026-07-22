@@ -97,6 +97,7 @@ Ask your agent to “take a browser snapshot of example.com”.
 | `browser_get_text(selector?)` | Visible text of a selector |
 | `browser_evaluate(function, element?, target?, filename?)` | Run page-world JavaScript and return JSON plus a fresh snapshot |
 | `browser_take_screenshot(element?, target?, type?, filename?, fullPage?, scale?)` | Save a confined page or element image |
+| `browser_session_state(action, path)` | Save or load cookies + localStorage (a Playwright storage state) under the output dir, so an agent can authenticate once and resume later |
 | `browser_close()` | End the browser session |
 
 ## Configuration

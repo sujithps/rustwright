@@ -89,6 +89,7 @@ def test_real_stdio_identity_and_complete_tool_inventory() -> None:
         "browser_network_request",
         "browser_network_requests",
         "browser_resize",
+        "browser_session_state",
     }
 
     async def checks() -> None:

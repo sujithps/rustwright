@@ -48,7 +48,7 @@ from pydantic import (
     model_validator,
 )
 
-from rustwright_mcp.filepolicy import get_file_policy
+from rustwright_mcp.filepolicy import FilePolicyError, get_file_policy
 from rustwright_mcp.session import SessionState
 from rustwright_mcp.snapshot import SNAPSHOT_JS, TARGET_SNAPSHOT_JS
 
@@ -644,6 +644,82 @@ def _write_text_output(content: str, filename: str, *, purpose: str) -> str:
         raise
 
 
+_LOCAL_STORAGE_APPLY_JS = """(entries) => {
+  for (const item of entries) {
+    if (item && typeof item.name === 'string') {
+      try { window.localStorage.setItem(item.name, String(item.value)); }
+      catch (error) {}
+    }
+  }
+}"""
+
+
+def _local_storage_init_script(origin: str, entries: list[Any]) -> str:
+    """Seed localStorage on the next navigation to ``origin`` (Playwright's
+    own storage-state restore mechanism), guarded by an origin check so it
+    only fires on the matching origin."""
+    return (
+        "(() => {\n"
+        f"  if (location.origin !== {json.dumps(origin)}) return;\n"
+        f"  const entries = {json.dumps(entries)};\n"
+        "  for (const item of entries) {\n"
+        "    if (item && typeof item.name === 'string') {\n"
+        "      try { window.localStorage.setItem(item.name, String(item.value)); }\n"
+        "      catch (error) {}\n"
+        "    }\n"
+        "  }\n"
+        "})();"
+    )
+
+
+def _apply_storage_state(
+    context: Any, page: Any, state: Any
+) -> tuple[int, int, str | None]:
+    """Restore cookies context-wide and localStorage per origin.
+
+    Cookies apply immediately across every origin. localStorage is applied to
+    the current origin right away and registered via an init script for every
+    origin so a later navigation restores it, matching how a Playwright context
+    created with ``storage_state`` behaves. Returns
+    ``(cookie_count, origin_count, origin_applied_now)``.
+    """
+    if not isinstance(state, dict):
+        raise ValueError("session-state must be a JSON object")
+    cookies = state.get("cookies")
+    origins = state.get("origins")
+    if cookies is None:
+        cookies = []
+    if origins is None:
+        origins = []
+    # A present-but-wrong-typed value (e.g. an object) is a corrupt file, not
+    # an absent field; validate the type rather than coercing it away.
+    if not isinstance(cookies, list) or not isinstance(origins, list):
+        raise ValueError("session-state 'cookies' and 'origins' must be arrays")
+
+    context.clear_cookies()
+    if cookies:
+        context.add_cookies(cookies)
+
+    try:
+        current_origin = page.evaluate("() => location.origin")
+    except Exception:
+        current_origin = None
+
+    applied_now: str | None = None
+    for origin_entry in origins:
+        if not isinstance(origin_entry, dict):
+            continue
+        origin = origin_entry.get("origin")
+        entries = origin_entry.get("localStorage") or []
+        if not isinstance(origin, str) or not isinstance(entries, list):
+            continue
+        context.add_init_script(_local_storage_init_script(origin, entries))
+        if current_origin is not None and origin == current_origin:
+            page.evaluate(_LOCAL_STORAGE_APPLY_JS, entries)
+            applied_now = origin
+    return len(cookies), len(origins), applied_now
+
+
 def _teardown() -> None:
     # For remote sessions, closing the connected Browser detaches this client;
     # Rustwright leaves the remotely owned browser running.
@@ -746,6 +822,10 @@ Function = Annotated[
 PositiveDimension = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 NetworkIndex = Annotated[int, Field(ge=1)]
 UploadPaths = Annotated[list[str], Field(max_length=50)]
+SessionStatePath = Annotated[
+    str,
+    Field(validation_alias=AliasChoices("path", "filename")),
+]
 
 
 _SYNTHETIC_DROP_JS = """async (target, payload) => {
@@ -1855,6 +1935,62 @@ def browser_take_screenshot(
         policy.discard_output(output_path)
         raise
     return _render_response(f"Screenshot written to `{artifact}`.", page=page)
+
+
+@_tool()
+def browser_session_state(
+    action: Literal["save", "load"],
+    path: SessionStatePath,
+) -> str:
+    """Save or load the session's cookies and localStorage.
+
+    `action="save"` writes a Playwright storage-state document (cookies plus
+    per-origin localStorage) as JSON to `path` beneath the configured output
+    directory. `action="load"` reads that JSON back, restoring cookies
+    context-wide and localStorage per origin (applied immediately for the
+    current origin, and on the next navigation to any other origin). This lets
+    an agent authenticate once and resume in a later session instead of
+    logging in again.
+    """
+    page = _page()
+    context = _state.context
+    if context is None:  # pragma: no cover - _page always attaches a context
+        raise RuntimeError("no browser context is available")
+
+    if action == "save":
+        state = context.storage_state()
+        content = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True)
+        artifact = _write_text_output(content, path, purpose="session-state")
+        cookies = state.get("cookies") or []
+        origins = state.get("origins") or []
+        return _render_response(
+            f"Saved session state to `{artifact}` "
+            f"({len(cookies)} cookies, {len(origins)} origins).",
+            page=page,
+        )
+
+    policy = get_file_policy()
+    try:
+        raw = policy.read_output(path)
+    except FilePolicyError as error:
+        raise ValueError(str(error)) from None
+    try:
+        state = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"session-state file is not valid JSON: {error}") from None
+
+    cookie_count, origin_count, applied_now = _apply_storage_state(
+        context, page, state
+    )
+    detail = (
+        f"Restored {cookie_count} cookies and localStorage for "
+        f"{origin_count} origin(s)."
+    )
+    if applied_now is not None:
+        detail += f" localStorage for {applied_now} applied to the current page."
+    if origin_count:
+        detail += " Other origins restore on the next navigation to them."
+    return _render_response(detail, page=page)
 
 
 @_tool()

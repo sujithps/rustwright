@@ -517,7 +517,7 @@ def test_caps_argv_and_env_warn_without_blocking_tools_list() -> None:
 
 def test_mirror_and_lean_tool_profiles_with_eval_default_on() -> None:
     mirror, _ = asyncio.run(_stdio_tools())
-    assert len(mirror) == 25
+    assert len(mirror) == 26
     assert {
         "browser_evaluate",
         "browser_get_text",

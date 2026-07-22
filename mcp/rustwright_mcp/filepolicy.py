@@ -256,6 +256,55 @@ class FilePolicy:
             self._evict_to_total_cap(protected=resolved)
             return self._artifact_link(resolved)
 
+    def read_output(self, requested: str | Path) -> bytes:
+        """Read a file confined to the output root without following a symlink.
+
+        Symmetric with :meth:`reserve_output`: artifacts written under
+        ``RUSTWRIGHT_MCP_OUTPUT_DIR`` (session state, dumps) can be read back
+        through the same confinement, independent of the input workspace. A
+        relative ``requested`` resolves beneath the output root; an absolute
+        path must already be within it. The final component must be a regular,
+        non-symlink file within the per-file byte cap.
+        """
+        with self._lock:
+            raw_path = Path(requested).expanduser()
+            candidate = (
+                raw_path if raw_path.is_absolute() else self.output_root / raw_path
+            )
+            try:
+                info = candidate.lstat()
+            except FileNotFoundError:
+                raise FilePolicyError(
+                    f"output file does not exist: {candidate}"
+                ) from None
+            if stat.S_ISLNK(info.st_mode):
+                raise FilePolicyError(
+                    f"output file must not be a symlink: {candidate}"
+                )
+            resolved = candidate.resolve(strict=True)
+            if not _is_within(resolved, self.output_root):
+                raise FilePolicyError(
+                    "output paths are confined to RUSTWRIGHT_MCP_OUTPUT_DIR "
+                    f"({self.output_root}); got {candidate}"
+                )
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(resolved, flags)
+            try:
+                fd_info = os.fstat(descriptor)
+                if not stat.S_ISREG(fd_info.st_mode):
+                    raise FilePolicyError(
+                        f"output path is not a regular file: {candidate}"
+                    )
+                if fd_info.st_size > self.max_file_bytes:
+                    raise FilePolicyError(
+                        f"output file exceeds the {self.max_file_bytes}-byte "
+                        "per-file cap"
+                    )
+                with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                    return handle.read()
+            finally:
+                os.close(descriptor)
+
     def _artifact_files(self) -> list[tuple[int, Path, int]]:
         artifacts: list[tuple[int, Path, int]] = []
         for path in tuple(self._created_outputs):
