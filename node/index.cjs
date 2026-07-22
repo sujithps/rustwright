@@ -38,6 +38,15 @@ function normalizeLaunchOptions(options = {}) {
   return out;
 }
 
+function normalizeContextOptions(options = {}) {
+  if (options == null) options = {};
+  const out = {};
+  if (hasOwn(options, 'ignoreHTTPSErrors')) out.ignoreHTTPSErrors = Boolean(options.ignoreHTTPSErrors);
+  if (hasOwn(options, 'timeout')) out.timeout = Number(options.timeout);
+  if (hasOwn(options, 'navigationTimeout')) out.navigationTimeout = Number(options.navigationTimeout);
+  return out;
+}
+
 function normalizeScreenshotOptions(options = {}) {
   if (options == null) return {};
   const out = {};
@@ -116,10 +125,25 @@ function parseRustJson(json) {
 class Browser {
   constructor(inner) {
     this._inner = inner;
+    this._contexts = [];
   }
 
   async newPage() {
     return new Page(await this._inner.newPage());
+  }
+
+  // Compatibility shim. The alpha Node engine drives a single Chromium process,
+  // so contexts created here do NOT provide the storage/cookie isolation a real
+  // Playwright BrowserContext does — they exist to keep the familiar
+  // `browser.newContext().newPage()` shape working and to carry default timeouts.
+  async newContext(options = {}) {
+    const context = new BrowserContext(this, normalizeContextOptions(options));
+    this._contexts.push(context);
+    return context;
+  }
+
+  contexts() {
+    return this._contexts.slice();
   }
 
   async close() {
@@ -131,9 +155,84 @@ class Browser {
   }
 }
 
+let warnedIgnoreHttpsErrors = false;
+
+class BrowserContext {
+  constructor(browser, options = {}) {
+    this._browser = browser;
+    this._options = options;
+    this._pages = [];
+    this._defaultTimeout = options.timeout;
+    this._defaultNavigationTimeout = options.navigationTimeout;
+
+    if (options.ignoreHTTPSErrors && !warnedIgnoreHttpsErrors) {
+      warnedIgnoreHttpsErrors = true;
+      // Certificate handling is a launch-time concern for the current engine and
+      // cannot be toggled per-context after the browser is running. Warn rather
+      // than silently pretend a security-relevant flag took effect.
+      console.warn(
+        'rustwright: newContext({ ignoreHTTPSErrors: true }) is accepted for API ' +
+          'compatibility but not yet enforced by the Node engine. Launch Chromium with ' +
+          "args: ['--ignore-certificate-errors'] if you need to bypass TLS errors."
+      );
+    }
+  }
+
+  browser() {
+    return this._browser;
+  }
+
+  pages() {
+    return this._pages.slice();
+  }
+
+  async newPage() {
+    const page = new Page(await this._browser._inner.newPage());
+    if (this._defaultTimeout != null) {
+      page._inner.setContextDefaultTimeout(this._defaultTimeout);
+    }
+    if (this._defaultNavigationTimeout != null) {
+      page._inner.setContextDefaultNavigationTimeout(this._defaultNavigationTimeout);
+    }
+    this._pages.push(page);
+    return page;
+  }
+
+  setDefaultTimeout(timeout) {
+    this._defaultTimeout = Number(timeout);
+    for (const page of this._pages) {
+      page._inner.setContextDefaultTimeout(this._defaultTimeout);
+    }
+  }
+
+  setDefaultNavigationTimeout(timeout) {
+    this._defaultNavigationTimeout = Number(timeout);
+    for (const page of this._pages) {
+      page._inner.setContextDefaultNavigationTimeout(this._defaultNavigationTimeout);
+    }
+  }
+
+  async close() {
+    const pages = this._pages.splice(0);
+    await Promise.all(
+      pages.map((page) => page.close().catch(() => {}))
+    );
+    const index = this._browser._contexts.indexOf(this);
+    if (index !== -1) this._browser._contexts.splice(index, 1);
+  }
+}
+
 class Page {
   constructor(inner) {
     this._inner = inner;
+  }
+
+  setDefaultTimeout(timeout) {
+    this._inner.setDefaultTimeout(Number(timeout));
+  }
+
+  setDefaultNavigationTimeout(timeout) {
+    this._inner.setDefaultNavigationTimeout(Number(timeout));
   }
 
   async goto(url, options = {}) {
@@ -203,6 +302,7 @@ const chromium = {
 module.exports = {
   chromium,
   Browser,
+  BrowserContext,
   Page,
   _decodeWireValue: decodeWireValue,
   _native: native
